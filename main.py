@@ -4,7 +4,7 @@ import threading
 import time
 from deepface import DeepFace
 
-# Emoções com seus emojis
+# Emoções suportadas
 EMOJI_EXPRESSIONS = {
     "happy": "😄",
     "sad": "😢",
@@ -15,22 +15,17 @@ EMOJI_EXPRESSIONS = {
     "neutral": "😐"
 }
 
-# Rodadas aleatórias
+# Gera 20 rodadas aleatórias
 ROUNDS = random.choices(list(EMOJI_EXPRESSIONS.keys()), k=20)
 
-# Inicialização
-cap = cv2.VideoCapture(0)
-font = cv2.FONT_HERSHEY_SIMPLEX
-score = 0
+# Variáveis globais
 emotion_detected = "..."
 emoji_detected = "😐"
-last_detection_time = 0
 face_box = None
+last_detection_time = 0
 
-# Controle para análise assíncrona
-lock = threading.Lock()
-
-def detect_emotion_async(frame):
+# Função de detecção assíncrona
+def detect_emotion(frame):
     global emotion_detected, emoji_detected, face_box
     try:
         result = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False)
@@ -42,45 +37,67 @@ def detect_emotion_async(frame):
         emoji_detected = "😐"
         face_box = None
 
-print("🎮 Iniciando Jogo: Imitador de Emojis!")
+# Inicializa a webcam
+cap = cv2.VideoCapture(0)
+font = cv2.FONT_HERSHEY_SIMPLEX
+score = 0
+
+print("🎮 Iniciando o Jogo de Imitação de Emojis!")
 
 for i, target_emotion in enumerate(ROUNDS, start=1):
-    target_emoji = EMOJI_EXPRESSIONS[target_emotion]
     matched = False
+    emoji_target = EMOJI_EXPRESSIONS[target_emotion]
     round_start = time.time()
 
-    while time.time() - round_start < 7:  # 7 segundos por rodada
+    while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
-        # Redimensiona para melhor desempenho
+        elapsed = int(time.time() - round_start)
+        remaining = 10 - elapsed
+
+        # Redimensiona para performance
         small_frame = cv2.resize(frame, (640, 480))
 
-        # Faz nova detecção a cada 1 segundo
+        # Atualiza detecção 1x por segundo
         if time.time() - last_detection_time > 1:
             last_detection_time = time.time()
-            threading.Thread(target=detect_emotion_async, args=(small_frame,)).start()
+            threading.Thread(target=detect_emotion, args=(small_frame,)).start()
 
-        # Texto UI
-        feedback = "✅ ACERTOU!" if emotion_detected == target_emotion else f"Imite: {target_emotion.upper()} {target_emoji}"
-        color = (0, 255, 0) if emotion_detected == target_emotion else (50, 50, 255)
+        # Verifica se acertou
+        if emotion_detected == target_emotion:
+            matched = True
 
-        # Mostra informações na tela
-        cv2.putText(frame, f"Rodada {i}/20", (20, 40), font, 0.9, (200, 255, 255), 2)
-        cv2.putText(frame, feedback, (20, 80), font, 0.9, color, 2)
+        # Desenha interface elegante
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (10, 10), (630, 100), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-        # Mostra emoji ao lado do rosto detectado
+        # Header
+        cv2.putText(frame, f"Rodada {i}/20", (20, 40), font, 0.9, (0, 255, 255), 2)
+        cv2.putText(frame, f"Tempo restante: {remaining}s", (400, 40), font, 0.9, (255, 255, 255), 2)
+
+        # Instrução
+        cv2.putText(frame, f"Imite: {target_emotion.upper()} {emoji_target}", (20, 80), font, 0.9, (255, 255, 255), 2)
+
+        # Emoji flutuante ao lado do rosto
         if face_box:
             x, y, w, h = face_box["x"], face_box["y"], face_box["w"], face_box["h"]
-            emoji_pos = (x + w + 10, y + int(h / 2))
+            emoji_pos = (x + w + 15, y + int(h / 2))
             cv2.putText(frame, emoji_detected, emoji_pos, font, 2, (255, 255, 255), 2)
 
         cv2.imshow("😄 Imitador de Emojis - Pressione Q para sair", frame)
 
-        if emotion_detected == target_emotion:
+        # Acertou
+        if matched:
             score += 1
-            time.sleep(1)
+            feedback = "✅ ACERTOU!"
+            break
+
+        # Errou (tempo acabou)
+        if remaining <= 0:
+            feedback = "❌ ERROU!"
             break
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -88,7 +105,19 @@ for i, target_emotion in enumerate(ROUNDS, start=1):
             cv2.destroyAllWindows()
             exit()
 
-# Encerramento
+    # Exibe resultado por 2 segundos
+    for _ in range(40):
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        cv2.rectangle(frame, (100, 150), (550, 300), (0, 0, 0), -1)
+        cv2.putText(frame, feedback, (160, 240), font, 2, (0, 255, 0) if matched else (0, 0, 255), 3)
+        cv2.imshow("😄 Imitador de Emojis", frame)
+        if cv2.waitKey(50) & 0xFF == ord('q'):
+            break
+
+# Final do jogo
 cap.release()
 cv2.destroyAllWindows()
-print(f"\n🏁 Fim do jogo! Pontuação final: {score}/20")
+print(f"\n🏁 Fim do jogo! Você acertou {score} de 20 expressões.")
