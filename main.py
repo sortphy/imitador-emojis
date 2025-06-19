@@ -1,116 +1,128 @@
 import cv2
+import os
 import time
 import random
-import threading
-from deepface import DeepFace
+import numpy as np
+from tensorflow.keras.models import load_model
 
-# Emoções e arquivos
-EMOJI_FILES = {
-    "happy": "emojis/happy.png",
-    "grimace": "emojis/grimace.png",
-    "handmouth": "emojis/handmouth.png",
-    "sad": "emojis/sad.png",
-    "angry": "emojis/angry.png",
-    "surprise": "emojis/surprise.png",
-    "neutral": "emojis/neutral.png"
-}
-EMOJI_IMAGES = {k: cv2.imread(v, cv2.IMREAD_UNCHANGED) for k, v in EMOJI_FILES.items()}
-ROUNDS = random.sample(list(EMOJI_FILES.keys()), k=5)
+# --- Configurações iniciais ---
 
-emotion_detected = "..."
-face_box = None
-last_detection_time = 0
+# Carrega o modelo treinado
+MODEL_PATH = "model.h5"
+model = load_model(MODEL_PATH)
 
-# Função overlay de PNG com alpha
+# Mapeia índices de saída para labels (pastas em dataset/train)
+CLASS_NAMES = sorted(os.listdir(os.path.join("dataset", "train")))
+# Ex.: ['angry','grimace',...,'neutral']
+num_classes = len(CLASS_NAMES)
+
+# Carrega emojis como imagens RGBA
+EMOJI_DIR = "emojis"
+emoji_imgs = {}
+for name in CLASS_NAMES:
+    path = os.path.join(EMOJI_DIR, f"{name}.png")
+    if os.path.exists(path):
+        emoji_imgs[name] = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+
+# Detector de faces Haar Cascade (OpenCV)
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+# Número de rodadas
+ROUNDS = 5
+targets = random.sample(CLASS_NAMES, k=ROUNDS)
+
+# Parâmetros de jogo
+TIMER_SEC = 10
+font = cv2.FONT_HERSHEY_SIMPLEX
+
+# Função para sobrepor PNG com alpha
 def overlay_image_alpha(img, overlay, x, y):
     h, w = overlay.shape[:2]
     if x < 0 or y < 0 or x + w > img.shape[1] or y + h > img.shape[0]:
         return
     roi = img[y:y+h, x:x+w]
-    overlay_rgb = overlay[:, :, :3]
-    mask = overlay[:, :, 3:] / 255.0
-    roi[:] = (1.0 - mask) * roi + mask * overlay_rgb
+    alpha = overlay[:, :, 3] / 255.0
+    for c in range(3):
+        roi[:, :, c] = (alpha * overlay[:, :, c] + (1 - alpha) * roi[:, :, c])
+    img[y:y+h, x:x+w] = roi
 
-# Detecção assíncrona
-def detect_emotion(frame):
-    global emotion_detected, face_box
-    try:
-        result = DeepFace.analyze(frame, actions=["emotion"], enforce_detection=False)
-        emotion_detected = result[0]["dominant_emotion"]
-        face_box = result[0]["region"]
-    except:
-        emotion_detected = "..."
-        face_box = None
-
-# Início do jogo
+# Loop do jogo
 cap = cv2.VideoCapture(0)
-font = cv2.FONT_HERSHEY_SIMPLEX
 score = 0
 
-print("🎮 Início do jogo: Imitador de Emojis")
+print("▶️  Iniciando Main Game")
 
-for i, target_emotion in enumerate(ROUNDS, start=1):
-    emoji_img = EMOJI_IMAGES[target_emotion]
+for idx, target in enumerate(targets, start=1):
+    start_time = time.time()
     matched = False
-    round_start = time.time()
-    show_feedback = False
-    feedback_timer = 0
+    print(f" Rodada {idx}/{ROUNDS}: imite '{target}'")
 
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
-        elapsed = int(time.time() - round_start)
-        remaining = 10 - elapsed
-        small_frame = cv2.resize(frame, (640, 480))
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
 
-        if time.time() - last_detection_time > 1:
-            last_detection_time = time.time()
-            threading.Thread(target=detect_emotion, args=(small_frame,)).start()
-
-        # Verifica acerto
-        if emotion_detected == target_emotion and not matched:
-            matched = True
-            score += 1
-            show_feedback = True
-            feedback_timer = time.time()
-
-        # Barra de cima
+        # Desenha HUD
         overlay = frame.copy()
         cv2.rectangle(overlay, (10, 10), (630, 100), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
-        cv2.putText(frame, f"Rodada {i}/5", (20, 40), font, 0.9, (0, 255, 255), 2)
-        cv2.putText(frame, f"Imite: {target_emotion.upper()}", (20, 80), font, 0.9, (255, 255, 255), 2)
+        # Texto HUD
+        remaining = TIMER_SEC - int(time.time() - start_time)
+        cv2.putText(frame, f"Rodada {idx}/{ROUNDS}", (20, 40), font, 0.9, (0,255,255), 2)
+        cv2.putText(frame, f"Imite: {target.upper()}", (20, 80), font, 0.9, (255,255,255), 2)
+        cv2.putText(frame, f"{remaining}s", (frame.shape[1]//2-30, frame.shape[0]//2),
+                    font, 2, (0,255,255), 4)
 
-        # Timer grande no centro
-        cv2.putText(frame, f"{remaining}s", (frame.shape[1] // 2 - 40, frame.shape[0] // 2),
-                    font, 2.5, (0, 255, 255), 4)
+        # Mostra emoji alvo no canto superior direito
+        if target in emoji_imgs:
+            em = emoji_imgs[target]
+            overlay_image_alpha(frame, em, frame.shape[1]-em.shape[1]-10, 10)
 
-        # Mostra emoji ao lado do rosto
-        if face_box and emoji_img is not None:
-            x, y, w, h = face_box["x"], face_box["y"], face_box["w"], face_box["h"]
-            overlay_image_alpha(frame, emoji_img, x + w + 15, y + h // 4)
+        # Para cada face detectada, faz previsão
+        for (x,y,w,h) in faces:
+            face = frame[y:y+h, x:x+w]
+            face_resized = cv2.resize(face, (128,128))
+            face_norm = face_resized.astype("float32") / 255.0
+            face_input = np.expand_dims(face_norm, axis=0)
 
-            # Mensagem de ACERTO ao lado do rosto
-            if show_feedback and time.time() - feedback_timer <= 2:
-                cv2.putText(frame, "✅ ACERTOU!", (x, y - 10), font, 1, (0, 255, 0), 3)
+            preds = model.predict(face_input, verbose=0)[0]
+            pred_class = CLASS_NAMES[np.argmax(preds)]
 
-        # Mostra janela única
-        cv2.imshow("😄 Imitador de Emojis", frame)
+            # Se acertou, marca matched e mostra feedback
+            if pred_class == target and not matched:
+                matched = True
+                score += 1
+                match_time = time.time()
 
-        # Fim da rodada
-        if remaining <= 0 or (matched and time.time() - feedback_timer > 2):
+            # Desenha retângulo ao redor da face
+            color = (0,255,0) if pred_class == target else (0,0,255)
+            cv2.rectangle(frame, (x,y), (x+w, y+h), color, 2)
+
+            # Se já acertou, mostra feedback ao lado
+            if matched and time.time() - match_time < 2:
+                cv2.putText(frame, "✅", (x+w+5, y+int(h/2)), font, 2, (0,255,0), 3)
+
+        cv2.imshow("Imitador (Modelo Próprio)", frame)
+
+        # Condições de saída da rodada
+        if matched and time.time() - match_time >= 2:
             break
-
+        if remaining <= 0:
+            break
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cap.release()
             cv2.destroyAllWindows()
+            print(f"\n🏁 Jogo interrompido. Sua pontuação: {score}/{idx-1}")
             exit()
 
-# Final
+    # pequeno delay antes da próxima rodada
+    time.sleep(0.5)
+
+# Fim do jogo
 cap.release()
 cv2.destroyAllWindows()
-print(f"\n🏁 Jogo encerrado. Você acertou {score}/5 expressões.")
-print("Obrigado por jogar! 👋")
+print(f"\n🏁 Jogo encerrado! Sua pontuação final: {score}/{ROUNDS}")
